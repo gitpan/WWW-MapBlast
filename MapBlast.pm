@@ -1,6 +1,6 @@
 package WWW::MapBlast;
-our $VERSION = 0.01;
-our $DATE = "Jun 25 2001 15:13:00 BST";
+our $VERSION = 0.02;
+our $DATE = "Mon Jun 25 18:13:00 2001 BST";
 
 use LWP::UserAgent;
 use HTTP::Request;
@@ -101,11 +101,20 @@ Accepts a country name and a postal code, returns the relative latitude and long
 
 The argument C<country> must match a key of the module's C<%countriesList> hash, so it may be an idea to check your input against those keys before calling.
 
+Will try to connect four times, and return C<undef> on failure.
+
+B<Note> that latitude and longitude is not (C<x>,C<y>) !
+
 =cut
 
 sub latlon { my ($country, $postcode) = (shift,shift);
-	my $doc = get_document($country,$postcode);
-	return extract_latlon($doc);
+	for (0..3){
+		warn "Trying $_...\n" if $CHAT;
+		my $doc = get_document($country,$postcode);
+		@_ = extract_latlon($doc);
+		last if defined $_[0];
+	}
+	return @_;
 }
 
 
@@ -123,10 +132,6 @@ sub get_document { my ($country,$postcode) = (shift,shift);
 	$ua->agent('Mozilla/25.'.(localtime)." (PERL __PACKAGE__ $VERSION");	# Give it a type name
 	warn "Attempting to access ...\n" if $CHAT;
 
-#
-# advanced search:
-# http://www.mapblast.com/myblast/map.mb?&IC=::8:&serch=adv
-#
 	my $url =
 			'http://www.mapblast.com/myblast/map.mb?'
 			. 'CMD=GEO&req_action=crmap&AD4='. $countriesList{$country}
@@ -151,28 +156,64 @@ sub get_document { my ($country,$postcode) = (shift,shift);
 # Accepts an HTML result page from a MapBlast.com search
 # Extracts the latitude/longitude from a link within the page
 # - such as http://www.mapblast.com/myblast/driveSilo.mb?&IC_2=51.592423:-0.171996:8:&CT_2=51.592423:-0.171995:20000&AD4_2=GBR&apmenu_2=&apcode_2=&GAD1_2=&GAD2_2=Leslie+Road&GAD3_2=London%2c+N2+8BH&GMI_2=&MA=1&phone_2="
-# Retunrs lat/lon as two scalars
+# Retunrs lat/lon, and the address as three scalars
 #
 sub extract_latlon { my $doc = shift;
 	my $token;
+	my $address = ' ';
 	my $p = HTML::TokeParser->new(\$doc) or die "Couldn't create TokePraser: $!";
+
+	# Get the address
+	while ($token = $p->get_token){
+		if (@$token[1] eq 'input'
+			and defined @$token[2]
+			and exists %{@$token[2]}->{name}
+			and exists %{@$token[2]}->{value}
+			and %{@$token[2]}->{name} =~ /^GAD\d$/
+			and %{@$token[2]}->{value} !~ m/^\s*$/
+		){
+			$_ = %{@$token[2]}->{value};
+			if (defined $address and $address !~ m/$_/i){
+				$address .=  "$_,";
+			}
+		}
+	}
+	$address = substr( $address, 1, length($address)-2 ) if defined $address;
+	$address =~ s/,+(\w)/, $1/g;	# MapBlast returns ugly lists
+	return "Address not found" if not defined $address and $doc=~/Address not found/i;
+
+	# Get the co-ords
+	$p = HTML::TokeParser->new(\$doc) or die "Couldn't create TokePraser: $!";
 	while ($token = $p->get_token
 	and not (@$token[1] eq 'img' and %{@$token[2]}->{src} eq '/myblast/images/topnav/mapsiloon.gif')
 	){}
 	while ($token = $p->get_token and @$token[1] ne 'a'){}
-	%{@$token[2]}->{href} =~ m/IC_2=([\d:.-]+)&/;
-	return split/:/,$1;
+ 	if (defined @$token[2]){
+		%{@$token[2]}->{href} =~ m/IC_2=([\d:.-]+)&/;
+	 	if (defined $1){
+	 		my ($lat,$lon,$rubbish) = split(/:/,$1,3);
+			return ($lat,$lon,$address);
+		}
+	}
+	warn "Unexpected format from MapBlast.com.\n";
+	return undef;
 }
 
 
 =head1 LATITUDE AND LONGITUDE
 
-Zero degrees longitude goes through Greenwich, England.
-Each 69 miles from this meridian yrepresents approximately 1 degree of longitude.
-East/West is plus/minus respectively.
+After L<http://www.mapblast.com/myblast/helpFaq.mb#2|http://www.mapblast.com/myblast/helpFaq.mb#2>:
+
+=over 4
 
 Zero degrees latitude is the equator, with the North pole at 90 degrees latitude and the South pole at -90 degrees latitude.
-Again, one degree of latitude is approx 69 miles. Greenwich, England is at 51.466 degrees north of the equator.
+one degree is approximately 69 miles. Greenwich, England is at 51.466 degrees north of the equator.
+
+Zero degrees longitude goes through Greenwich, England.
+Again, Each 69 miles from this meridian represents approximately 1 degree of longitude.
+East/West is plus/minus respectively.
+
+=back
 
 =head1 PREREQUISITES
 
@@ -185,6 +226,12 @@ Again, one degree of latitude is approx 69 miles. Greenwich, England is at 51.46
 =head1 EXPORTS
 
 None by default.
+
+=head1 REVISIONS
+
+=item 0.02
+
+Now returns street addresses in addition to latitude and longitude.
 
 =head1 SEE ALSO
 
